@@ -1,1163 +1,620 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEditorInternal;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
 namespace com.ktgame.utils.asset_bookmarker.editor
 {
-	public class AssetBookmarker : EditorWindow
-	{
-		private const string StrSaveName = "AssetsBookmarkSave";
-		private const string StrShowTab = "Tabs";
-		private const string StrShowOptions = "Options";
-		private const string StrDone = "Done";
-		private const string StrEdit = "Edit";
-		private const string StrReset = "Reset";
-		private const string StrDrag = "Drag and drop assets here";
-		private const string StrOpen = "Ping";
-		private const string StrRemove = "-";
-		private const string StrShowPath = "Show path";
-		private const string StrShowNumber = "Show number";
-		private const string StrTip = "Tip";
-		private const string StrList = "List";
-		private const string StrGrid = "Grid";
-		private bool _isDrag;
-		private bool _showPath;
-		private float _contentWidth;
-
-		private int _tipIndex;
-
-		private readonly List<string> _tipList = new List<string>()
-		{
-			"Hold control & click to ping",
-			"Hold alt & click to remove",
-			"Click to icon, drag and drop to create object or reference",
-		};
-
-		private bool ShowPath
-		{
-			get => _showPath;
-			set
-			{
-				_showPath = value;
-				EditorPrefs.SetBool("Assets_Bookmark_ShowPath", value);
-			}
-		}
-
-		private bool _showNumber;
-
-		private bool ShowNumber
-		{
-			get => _showNumber;
-			set
-			{
-				_showNumber = value;
-				EditorPrefs.SetBool("Assets_Bookmark_ShowNumber", value);
-			}
-		}
-
-		public List<CacheTabInfo> Tabs = new List<CacheTabInfo>() { new CacheTabInfo { id = 0, tabName = "Common" } };
-		public List<CacheObjectInfo> Objects = new List<CacheObjectInfo>();
-		public List<CacheObjectInfo> FilterList = new List<CacheObjectInfo>();
-		public string Progress;
-
-		public string SearchText = string.Empty;
-		private string _oldSearchText;
-		private Vector2 _objectsScrollPosition;
-		private Vector2 _tabsScrollPosition;
-		private EditorCacheStyle _s;
-		private int _oldTabIndex = -1;
-		private int _tabIndex;
-		private bool _isEditMode;
-		private bool _isShowTabs;
-		private bool _isShowTip = true;
-		private bool _showOptions;
-		private ReorderableList _objectsReorderableList;
-		private ReorderableList _tabsReorderableList;
-
-		private static Object[] _willRegisterAssets = null;
-
-		private float _currentTabViewWidth;
-		private bool _isResize;
-		private Rect _cursorChangeRect;
-		private GUILayoutOption _expandWidthFalse = GUILayout.ExpandWidth(false);
-		private double _time;
-
-		private void OnEnable()
-		{
-			_time = EditorApplication.timeSinceStartup;
-			_oldSearchText = "old";
-			InitReOrderTabList();
-
-			_currentTabViewWidth = 110;
-			_cursorChangeRect = new Rect(_currentTabViewWidth, 0, 5, position.size.y);
-			ShowPath = EditorPrefs.GetBool("Assets_Bookmark_ShowPath", false);
-			ShowNumber = EditorPrefs.GetBool("Assets_Bookmark_ShowNumber", false);
-			_isShowTip = EditorPrefs.GetBool("Assets_Bookmark_ShowTip", true);
-
-			EditorApplication.update += Update;
-		}
-
-		private void OnDisable()
-		{
-			EditorApplication.update -= Update;
-		}
-
-		[MenuItem("Ktgame/Assets Bookmarker", false, 5000)]
-		public static void Open()
-		{
-			var w = GetWindow<AssetBookmarker>();
-			w.titleContent.text = "Assets Bookmarker";
-			w.Read();
-			w.Show();
-		}
-
-		[MenuItem("Assets/Add to Assets Bookmarker", false, 10001)]
-		private static void RegisterSelection()
-		{
-			_willRegisterAssets = Selection.objects;
-			Open();
-		}
-
-		private void Update()
-		{
-			if (!_isShowTip)
-			{
-				return;
-			}
-
-			if (EditorApplication.timeSinceStartup - _time >= 3)
-			{
-				_time = EditorApplication.timeSinceStartup;
-				_tipIndex++;
-				if (_tipIndex >= _tipList.Count)
-				{
-					_tipIndex = 0;
-				}
-			}
-		}
-
-		private void InitReOrderTabList()
-		{
-			_tabsReorderableList = new ReorderableList(Tabs, typeof(CacheTabInfo), true, false, true, true);
-			_tabsReorderableList.drawElementCallback += DrawTabElementCallback;
-			_tabsReorderableList.onChangedCallback += _ => { Save(); };
-			_tabsReorderableList.onAddCallback += _ => { AddNewTab(); };
-		}
-
-		private void FilterWhenTabChanged()
-		{
-			if (_oldTabIndex != _tabIndex)
-			{
-				if (Tabs.Count > 0)
-				{
-					_oldTabIndex = _tabIndex;
-					if (Tabs[_tabIndex].list == null)
-					{
-						Tabs[_tabIndex].list = new List<CacheObjectInfo>();
-					}
-
-					Objects = Tabs[_tabIndex].list;
-					Filter();
-				}
-				else
-				{
-					Tabs = new List<CacheTabInfo> { new CacheTabInfo() { id = 0, tabName = "Common" } };
-				}
-
-				EditorGUI.FocusTextInControl("");
-				UpdatePreviewSize();
-			}
-		}
-
-		private void UpdatePreviewSize()
-		{
-			_s.PreviewTexture.fixedWidth = _s.PreviewTexture.fixedHeight = Tabs[_tabIndex].iconSize;
-		}
-
-		private void OnGUI()
-		{
-			if (_s == null)
-			{
-				_s = new EditorCacheStyle();
-				UpdatePreviewSize();
-			}
-
-			FilterWhenTabChanged();
-			DisplayTopBar();
-			GUILayout.BeginHorizontal();
-			if (_isShowTabs)
-			{
-				DisplayTabs();
-				_contentWidth = position.width - _currentTabViewWidth - 80;
-			}
-			else
-			{
-				_contentWidth = position.width - 80;
-			}
-
-			DisplayObjectGroup();
-
-			if (_willRegisterAssets != null)
-			{
-				for (int i = 0; i < _willRegisterAssets.Length; i++)
-				{
-					Object obj = _willRegisterAssets[i];
-					if (Objects.Find(s => s.obj == obj) == null)
-					{
-						var item = new CacheObjectInfo
-						{
-							Name = obj.name,
-							location = CacheObjectLocation.Assets,
-							obj = obj,
-							path = AssetDatabase.GetAssetPath(obj),
-						};
-						
-						item.SetDisplayName();
-						Objects.Add(item);
-						Save();
-					}
-				}
-
-				Filter();
-				EditorUtility.SetDirty(this);
-				_willRegisterAssets = null;
-			}
-
-			GUILayout.EndHorizontal();
-			if (_isShowTip)
-			{
-				GUILayout.Label(_tipList[_tipIndex], EditorStyles.helpBox);
-			}
-		}
-
-		private void ShowOptions()
-		{
-			ShowPath = GUILayout.Toggle(ShowPath, StrShowPath, _s.ExpandWidthFalse);
-			ShowNumber = GUILayout.Toggle(ShowNumber, StrShowNumber, _s.ExpandWidthFalse);
-			EditorGUIUtility.labelWidth = 60;
-			var iconSize = EditorGUILayout.Slider("Icon Size", Tabs[_tabIndex].iconSize, 20, 100);
-			if (Math.Abs(iconSize - Tabs[_tabIndex].iconSize) > .01f)
-			{
-				Tabs[_tabIndex].iconSize = iconSize;
-				UpdatePreviewSize();
-				Save();
-			}
-		}
-
-		private void DisplayObjects()
-		{
-			GUILayout.BeginVertical();
-			if (_showOptions)
-			{
-				ShowOptions();
-			}
-
-			_objectsScrollPosition = GUILayout.BeginScrollView(_objectsScrollPosition);
-			if (_isEditMode)
-			{
-				DisplayReorderList();
-			}
-			else
-			{
-				if (Tabs[_tabIndex].gridView)
-				{
-					DisplayGridObject();
-				}
-				else
-				{
-					DisplayListObjects();
-				}
-			}
-
-			GUILayout.EndScrollView();
-			GUILayout.EndVertical();
-		}
-
-		private void DisplayObjectGroup()
-		{
-			if (Objects == null)
-			{
-				return;
-			}
-
-			DisplayObjects();
-			UpdateDragAndDrop();
-		}
-
-		private void DisplayTopBar()
-		{
-			GUILayout.BeginHorizontal();
-
-			if (GUILayout.Button(StrShowTab, _isShowTabs ? _s.ButtonStyle : EditorStyles.toolbarButton, _s.ExpandWidthFalse))
-			{
-				_isShowTabs = !_isShowTabs;
-			}
-
-			if (GUILayout.Button(StrShowOptions, _showOptions ? _s.ButtonStyle : EditorStyles.toolbarButton, _s.ExpandWidthFalse))
-			{
-				_showOptions = !_showOptions;
-			}
-
-			if (GUILayout.Button(Tabs[_tabIndex].gridView ? StrList : StrGrid, EditorStyles.toolbarButton, _s.ExpandWidthFalse))
-			{
-				Tabs[_tabIndex].gridView = !Tabs[_tabIndex].gridView;
-			}
-
-			if (GUILayout.Button(StrTip, _isShowTip ? _s.ButtonStyle : EditorStyles.toolbarButton, _s.ExpandWidthFalse))
-			{
-				_isShowTip = !_isShowTip;
-				EditorPrefs.SetBool("Assets_Bookmark_ShowTip", _isShowTip);
-			}
-
-			SearchText = EditorGUILayout.TextField(SearchText, _s.ToolbarSeachTextField);
-			GUILayout.Label(Progress, _s.ExpandWidthFalse);
-			if (GUILayout.Button(StrReset, EditorStyles.toolbarButton, _s.ExpandWidthFalse))
-			{
-				Objects.Clear();
-				FilterList.Clear();
-				Progress = $"{FilterList.Count.ToString()}/{Objects.Count.ToString()}";
-				Focus();
-				Save();
-			}
-
-			if (_oldSearchText != SearchText)
-			{
-				_oldSearchText = SearchText;
-				Filter();
-			}
-
-			if (!_isEditMode)
-			{
-				if (GUILayout.Button(StrEdit, _s.ButtonStyle, _s.ExpandWidthFalse))
-				{
-					_isEditMode = true;
-				}
-			}
-			else
-			{
-				if (GUILayout.Button(StrDone, _s.ButtonStyle, _s.ExpandWidthFalse))
-				{
-					_isEditMode = false;
-				}
-			}
-
-			GUILayout.EndHorizontal();
-		}
-
-		private void DisplayDetail() { }
-
-		private void DisplayReorderList()
-		{
-			GUILayout.BeginVertical();
-			_objectsReorderableList.DoLayoutList();
-			GUILayout.EndVertical();
-		}
-
-		private void DisplayGridObject()
-		{
-			var size = Tabs[_tabIndex].iconSize;
-			int itemsPerRow = (int)(_contentWidth / size);
-			if (itemsPerRow <= 0)
-			{
-				itemsPerRow = 1;
-			}
-
-			GUILayout.BeginVertical();
-			int count = 0;
-			int page = 0;
-			int countItems = 0;
-			GUILayout.BeginHorizontal();
-
-			bool isHoleControl = Event.current.control;
-			bool isHoleAlt = Event.current.alt;
-			bool isMouseDown = Event.current.type == EventType.MouseDown;
-
-			CacheObjectInfo hoverObject = null;
-			foreach (var o in FilterList)
-			{
-				bool ignore = false;
-				if (o.previewTexture == null)
-				{
-					o.previewTexture = AssetPreview.GetAssetPreview(o.obj);
-					if (o.previewTexture == null && !o.isPrefab)
-					{
-						o.previewTexture = AssetPreview.GetMiniThumbnail(o.obj);
-					}
-				}
-
-				GUILayout.BeginVertical(EditorStyles.helpBox);
-				GUILayout.Label(o.previewTexture, GUILayout.Width(size), GUILayout.Height(size));
-				GUILayout.EndVertical();
-				var lastPreviewRect = GUILayoutUtility.GetLastRect();
-				if (isMouseDown && lastPreviewRect.Contains(Event.current.mousePosition))
-				{
-					if (isHoleControl)
-					{
-						o.Ping();
-					}
-					else if (isHoleAlt)
-					{
-						UpdateRemove(o);
-						GUILayout.EndHorizontal();
-						break;
-					}
-					else if (lastPreviewRect.Contains(Event.current.mousePosition))
-					{
-						_isDrag = true;
-						GUIUtility.hotControl = 0;
-						DragAndDrop.PrepareStartDrag();
-						DragAndDrop.objectReferences = new[] { o.obj };
-						DragAndDrop.SetGenericData("DRAG_ID", o.obj);
-						DragAndDrop.StartDrag("A");
-					}
-				}
-
-				page++;
-				countItems++;
-				if (countItems >= itemsPerRow)
-				{
-					countItems = 0;
-					GUILayout.EndHorizontal();
-					GUILayout.BeginHorizontal();
-				}
-			}
-
-			GUILayout.EndHorizontal();
-			GUILayout.EndVertical();
-		}
-
-		private void DisplayListObjects()
-		{
-			GUILayout.BeginVertical();
-			if (FilterList.Count == 0)
-			{
-				EditorGUI.BeginDisabledGroup(true);
-				GUILayout.Label(StrDrag, _s.TextEmpty);
-				EditorGUI.EndDisabledGroup();
-			}
-
-			int count = 1;
-			bool isHoleControl = Event.current.control;
-			bool isHoleAlt = Event.current.alt;
-			bool isMouseDown = Event.current.type == EventType.MouseDown;
-			foreach (var o in FilterList)
-			{
-				bool ignore = false;
-				GUILayout.BeginHorizontal(EditorStyles.helpBox);
-				{
-					if (o.previewTexture == null)
-					{
-						o.previewTexture = AssetPreview.GetAssetPreview(o.obj);
-						if (o.previewTexture == null && !o.isPrefab)
-						{
-							o.previewTexture = AssetPreview.GetMiniThumbnail(o.obj);
-						}
-					}
-
-					if (_showNumber)
-					{
-						GUILayout.Label(count.ToString(), _s.ExpandWidthFalse);
-					}
-
-					GUILayout.Label(o.previewTexture, _s.PreviewTexture);
-					var lastPreviewRect = GUILayoutUtility.GetLastRect();
-					if (lastPreviewRect.Contains(Event.current.mousePosition))
-					{
-						if (isMouseDown)
-						{
-							_isDrag = true;
-							ignore = true;
-							GUIUtility.hotControl = 0;
-							DragAndDrop.PrepareStartDrag();
-							DragAndDrop.objectReferences = new[] { o.obj };
-							DragAndDrop.SetGenericData("DRAG_ID", o.obj);
-							DragAndDrop.StartDrag("A");
-						}
-					}
-
-					GUILayout.BeginVertical();
-					{
-						GUILayout.BeginHorizontal();
-						GUILayout.Label(o.GetDisplayName(), GUILayout.MinWidth(30));
-						if (o.location == CacheObjectLocation.Assets)
-						{
-							if (GUILayout.Button(StrOpen, _s.ExpandWidthFalse))
-							{
-								ignore = true;
-								o.Ping();
-							}
-						}
-
-						if (GUILayout.Button(StrRemove, _s.ExpandWidthFalse))
-						{
-							ignore = true;
-							UpdateRemove(o);
-							GUILayout.EndHorizontal();
-							break;
-						}
-
-						GUILayout.EndHorizontal();
-					}
-					if (_showPath)
-					{
-						if (!string.IsNullOrEmpty(o.path))
-						{
-							GUILayout.Label(o.path, _s.Text1);
-						}
-						else if (!string.IsNullOrEmpty(o.prefabPath))
-						{
-							GUILayout.Label(o.prefabPath, _s.Text1);
-						}
-					}
-
-					// ViewParents(o);
-					GUILayout.EndVertical();
-				}
-				GUILayout.EndHorizontal();
-
-				var itemRect = GUILayoutUtility.GetLastRect();
-				if (!ignore && Event.current.type == EventType.MouseDown &&
-					itemRect.Contains(Event.current.mousePosition))
-				{
-					if (isHoleControl)
-					{
-						o.Ping();
-					}
-					else if (isHoleAlt)
-					{
-						ignore = true;
-						UpdateRemove(o);
-						GUILayout.EndHorizontal();
-						break;
-					}
-					else if (o.obj == null)
-					{
-						o.Ping();
-					}
-					else if (o.obj is DefaultAsset)
-					{
-						AssetDatabase.OpenAsset(o.obj);
-					}
-					else if (!string.IsNullOrEmpty(o.prefabPath))
-					{
-						AssetDatabase.OpenAsset(o.obj);
-					}
-					else
-					{
-						AssetDatabase.OpenAsset(o.obj);
-					}
-				}
-
-				count++;
-			}
-
-			GUILayout.EndVertical();
-		}
-
-		public void UpdateRemove(CacheObjectInfo o)
-		{
-			Objects.Remove(o);
-			FilterList.Remove(o);
-			Progress = $"{FilterList.Count.ToString()}/{Objects.Count.ToString()}";
-			Save();
-			Focus();
-		}
-
-		private void ResizeScrollView()
-		{
-			EditorGUIUtility.AddCursorRect(_cursorChangeRect, MouseCursor.ResizeHorizontal);
-
-			if (Event.current.type == EventType.MouseDown && _cursorChangeRect.Contains(Event.current.mousePosition))
-			{
-				_isResize = true;
-			}
-
-			if (_isResize)
-			{
-				_currentTabViewWidth = Event.current.mousePosition.x;
-				_currentTabViewWidth = Mathf.Clamp(_currentTabViewWidth, 100, 200);
-				_cursorChangeRect.Set(_currentTabViewWidth, _cursorChangeRect.y, _cursorChangeRect.width,
-					_cursorChangeRect.height);
-				Repaint();
-			}
-
-			if (Event.current.type == EventType.MouseUp)
-				_isResize = false;
-		}
-
-		private void DisplayTabs()
-		{
-			GUILayout.BeginVertical(_s.ProjectBrowserIconAreaBg, GUILayout.Width(_currentTabViewWidth));
-			_tabsScrollPosition = GUILayout.BeginScrollView(_tabsScrollPosition);
-			if (!_isEditMode)
-			{
-				for (int i = 0; i < Tabs.Count; i++)
-				{
-					var buttonStyle = i == _tabIndex ? _s.SelectionRect : _s.RectangleToolSelection;
-
-					if (_isEditMode && i == _tabIndex)
-					{
-						GUILayout.BeginVertical();
-						Tabs[i].tabName = EditorGUILayout.TextField(Tabs[i].tabName, _s.ExpandWidth200);
-						GUILayout.EndVertical();
-					}
-					else
-					{
-						if (GUILayout.Button(Tabs[i].tabName, buttonStyle, GUILayout.Width(_currentTabViewWidth - 5)))
-						{
-							_tabIndex = i;
-						}
-					}
-				}
-			}
-			else
-			{
-				_tabsReorderableList.DoLayoutList();
-			}
-
-			GUILayout.EndScrollView();
-			GUILayout.EndVertical();
-			ResizeScrollView();
-		}
-
-		private void AddNewTab()
-		{
-			if (Tabs.Count == 0)
-			{
-				Tabs.Add(new CacheTabInfo { id = 0, tabName = "New tab", list = new List<CacheObjectInfo>() });
-			}
-			else
-			{
-				Tabs.Add(new CacheTabInfo
-					{ id = Tabs.Max(s => s.id) + 1, tabName = "New tab", list = new List<CacheObjectInfo>() });
-			}
-
-			Save();
-		}
-
-		private void Filter()
-		{
-			if (string.IsNullOrEmpty(SearchText))
-			{
-				FilterList = Objects;
-			}
-			else
-			{
-				var temp = SearchText.ToLower();
-				FilterList = Objects.Where(s => s.Name.ToLower().Contains(temp)).ToList();
-			}
-
-			Progress = $"{FilterList.Count.ToString()}/{Objects.Count.ToString()}";
-			_objectsReorderableList =
-				new ReorderableList(FilterList, typeof(CacheObjectInfo), true, false, false, false);
-			_objectsReorderableList.drawElementCallback += DrawObjectElementCallback;
-			_objectsReorderableList.onChangedCallback += _ => { Save(); };
-		}
-
-		private void DrawObjectElementCallback(Rect rect, int index, bool isactive, bool isfocused)
-		{
-			var data = FilterList[index];
-			var avatarRect = new Rect(rect.x, rect.y, rect.height, rect.height);
-			GUI.Label(avatarRect, data.previewTexture);
-			var nameRect = new Rect(rect.x + rect.height + 3, rect.y, rect.width - rect.height - 3, rect.height);
-			GUI.Label(nameRect, data.GetDisplayName());
-		}
-
-		private void DrawTabElementCallback(Rect rect, int index, bool isactive, bool isfocused)
-		{
-			var data = Tabs[index];
-			var nameRect = new Rect(rect.x, rect.y, rect.width, rect.height);
-			data.tabName = GUI.TextField(nameRect, data.tabName);
-		}
-
-		private void UpdateDragAndDrop()
-		{
-			if (Event.current.type == EventType.DragUpdated)
-			{
-				DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
-				Event.current.Use();
-			}
-			else if (Event.current.type == EventType.DragPerform)
-			{
-				DragAndDrop.AcceptDrag();
-				if (_isDrag)
-				{
-					_isDrag = false;
-					return;
-				}
-
-				if (DragAndDrop.paths.Length == 0 && DragAndDrop.objectReferences.Length > 0)
-				{
-					foreach (Object obj in DragAndDrop.objectReferences)
-					{
-						var currentPrefab = PrefabStageUtility.GetCurrentPrefabStage();
-						string assetPath = obj.name;
-						var transform = (obj as GameObject).transform;
-						GetScenePath(transform.transform, ref assetPath);
-						var item = new CacheObjectInfo
-						{
-							Name = obj.name,
-							path = assetPath,
-							parents = GetPrefabParents(new List<string>(), transform)
-						};
-						item.SetDisplayName();
-
-						CacheObjectLocation location = CacheObjectLocation.Assets;
-						if (currentPrefab != null)
-						{
-							item.prefabPath = currentPrefab.prefabAssetPath;
-							item.location = CacheObjectLocation.Prefab;
-						}
-						else
-						{
-							item.location = CacheObjectLocation.Scene;
-						}
-
-						if (Objects.Find(s => s.obj == item.obj) == null)
-						{
-							Objects.Add(item);
-							Save();
-						}
-						else if (Objects.Find(s => s.path == item.path) == null)
-						{
-							Objects.Add(item);
-							Save();
-						}
-					}
-
-					Filter();
-				}
-				else if (DragAndDrop.paths.Length > 0 && DragAndDrop.objectReferences.Length == 0)
-				{
-					foreach (string path in DragAndDrop.paths)
-					{
-						Debug.Log("- " + path);
-					}
-				}
-				else if (DragAndDrop.paths.Length == DragAndDrop.objectReferences.Length)
-				{
-					for (int i = 0; i < DragAndDrop.objectReferences.Length; i++)
-					{
-						Object obj = DragAndDrop.objectReferences[i];
-						if (Objects.Find(s => s.obj == obj) == null)
-						{
-							var item = new CacheObjectInfo
-							{
-								Name = obj.name,
-								location = CacheObjectLocation.Assets,
-								obj = obj,
-								path = AssetDatabase.GetAssetPath(obj),
-							};
-							item.SetDisplayName();
-							Objects.Add(item);
-							Save();
-						}
-					}
-
-					Filter();
-				}
-			}
-		}
-
-		private List<string> GetPrefabParents(List<string> list, Transform target)
-		{
-			if (target.parent != null)
-			{
-				list.Insert(0, target.parent.name);
-				GetPrefabParents(list, target.parent);
-			}
-
-			return list;
-		}
-
-		private void ViewParents(CacheObjectInfo cpInfo)
-		{
-			if (!_showPath || cpInfo.parents.Count <= 0)
-				return;
-
-			GUILayout.BeginHorizontal();
-			foreach (var parent in cpInfo.parents)
-			{
-				if (parent == null)
-				{
-					continue;
-				}
-
-				if (GUILayout.Button(parent, _s.Parent, _s.ExpandWidthFalse))
-				{
-					// Ping(parent.transform);
-				}
-			}
-
-			GUILayout.EndHorizontal();
-		}
-
-		private void Ping(Component component)
-		{
-			//             if (!string.IsNullOrEmpty(AssetDatabase.GetAssetPath(component)))
-			//             {
-			// #if UNITY_2021_OR_NEWER
-			//             var stage = PrefabStageUtility.OpenPrefab(AssetDatabase.GetAssetPath(component));
-			//             currentObject = stage.prefabContentsRoot;
-			// #else
-			//                 AssetDatabase.OpenAsset(AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GetAssetPath(component)));
-			//                 currentObject = PrefabStageUtility.GetCurrentPrefabStage().prefabContentsRoot;
-			// #endif
-			//
-			//                 Find(currentObject);
-			//             }
-
-			SceneView.lastActiveSceneView.LookAt(component.gameObject.transform.position);
-			Selection.activeObject = component;
-			EditorGUIUtility.PingObject(component);
-		}
-
-		private void GetScenePath(Transform obj, ref string path)
-		{
-			var parent = obj.parent;
-			if (parent != null)
-			{
-				path = parent.name + "/" + path;
-				GetScenePath(parent, ref path);
-			}
-		}
-
-		[Serializable]
-		public class CacheObjectInfo
-		{
-			public Object obj;
-			public string path;
-			public string prefabPath;
-			public bool isPrefab;
-			public string Name;
-			public CacheObjectLocation location;
-			public Texture2D previewTexture;
-			public string displayName;
-			public List<string> parents = new List<string>();
-
-			public void SetDisplayName()
-			{
-				isPrefab = path.EndsWith(".prefab");
-				displayName = Name;
-				// displayName = $"{GetPrefix()} {Name}";
-			}
-
-			public string GetDisplayName()
-			{
-				return displayName;
-			}
-
-			public string GetPrefix()
-			{
-				if (location == CacheObjectLocation.Assets)
-					return "A:";
-				if (location == CacheObjectLocation.Scene)
-					return "S:";
-
-				return "P:";
-			}
-
-			public void OpenPrefab()
-			{
-				AssetDatabase.OpenAsset(AssetDatabase.LoadAssetAtPath(prefabPath, typeof(GameObject)));
-				var rootGameObjects = PrefabStageUtility.GetCurrentPrefabStage().prefabContentsRoot;
-
-				var arrayPath = path.Split('/').ToList();
-				arrayPath.RemoveAt(0);
-				arrayPath.RemoveAt(0);
-				var newPath = string.Join("/", arrayPath);
-				var obj = rootGameObjects.transform.Find(newPath);
-				if (obj != null)
-				{
-					SceneView.lastActiveSceneView.LookAt(obj.gameObject.transform.position);
-					Selection.activeObject = obj;
-					EditorGUIUtility.PingObject(obj);
-				}
-			}
-
-			public void PingLocation(int locationIndex)
-			{
-				if (location == CacheObjectLocation.Prefab)
-				{
-					AssetDatabase.OpenAsset(AssetDatabase.LoadAssetAtPath(prefabPath, typeof(GameObject)));
-					var rootGameObjects = PrefabStageUtility.GetCurrentPrefabStage().prefabContentsRoot;
-
-					var arrayPath = path.Split('/').ToList();
-					arrayPath.RemoveAt(0);
-					arrayPath.RemoveAt(0);
-
-					var newPath = string.Join("/", arrayPath);
-					var obj = rootGameObjects.transform.Find(newPath);
-					if (obj != null)
-					{
-						SceneView.lastActiveSceneView.LookAt(obj.gameObject.transform.position);
-						Selection.activeObject = obj;
-						EditorGUIUtility.PingObject(obj);
-					}
-				}
-			}
-
-			public void Ping()
-			{
-				if (location == CacheObjectLocation.Assets)
-				{
-					Selection.activeObject = obj;
-					EditorGUIUtility.PingObject(obj);
-				}
-				else if (location == CacheObjectLocation.Prefab)
-				{
-					AssetDatabase.OpenAsset(AssetDatabase.LoadAssetAtPath(prefabPath, typeof(GameObject)));
-					var rootGameObjects = PrefabStageUtility.GetCurrentPrefabStage().prefabContentsRoot;
-
-					var arrayPath = path.Split('/').ToList();
-					arrayPath.RemoveAt(0);
-					arrayPath.RemoveAt(0);
-					var newPath = string.Join("/", arrayPath);
-					var obj = rootGameObjects.transform.Find(newPath);
-					if (obj != null)
-					{
-						SceneView.lastActiveSceneView.LookAt(obj.gameObject.transform.position);
-						Selection.activeObject = obj;
-						EditorGUIUtility.PingObject(obj);
-					}
-				}
-				else if (location == CacheObjectLocation.Scene)
-				{
-					if (PrefabStageUtility.GetCurrentPrefabStage() != null)
-					{
-						PrefabUtility.UnloadPrefabContents(
-							PrefabStageUtility.GetCurrentPrefabStage().prefabContentsRoot);
-					}
-
-					var arrayPath = path.Split('/').ToList();
-					arrayPath.RemoveAt(0);
-					var newPath = string.Join("/", arrayPath);
-
-					if (arrayPath.Count == 0)
-						newPath = path;
-
-					Transform obj = null;
-					for (int i = 0; i < SceneManager.sceneCount; i++)
-					{
-						bool check = false;
-						var scene = SceneManager.GetSceneAt(i);
-						var rootGameObjects = scene.GetRootGameObjects().ToList();
-						foreach (var gameObject in rootGameObjects)
-						{
-							obj = gameObject.transform.Find(newPath);
-							if (obj != null)
-							{
-								check = true;
-								break;
-							}
-						}
-
-						if (check)
-							break;
-
-						var tempObj = rootGameObjects.Find(s => s.name == newPath);
-						if (tempObj != null)
-						{
-							obj = tempObj.transform;
-							break;
-						}
-					}
-
-					if (obj != null)
-					{
-						SceneView.lastActiveSceneView.LookAt(obj.gameObject.transform.position);
-						Selection.activeObject = obj;
-						EditorGUIUtility.PingObject(obj);
-					}
-				}
-			}
-		}
-
-		private void Save()
-		{
-			string data = JsonUtility.ToJson(new EditorCacheSave { tabs = Tabs });
-			EditorPrefs.SetString(Application.dataPath + StrSaveName, data);
-		}
-
-		private void Read()
-		{
-			var data = EditorPrefs.GetString(Application.dataPath + StrSaveName);
-			EditorCacheSave editorCacheSave;
-			if (string.IsNullOrEmpty(data))
-			{
-				editorCacheSave = new EditorCacheSave
-					{ tabs = new List<CacheTabInfo> { new CacheTabInfo() { id = 0, tabName = "Common" } } };
-			}
-			else
-			{
-				editorCacheSave = JsonUtility.FromJson<EditorCacheSave>(data);
-			}
-
-			Tabs.Clear();
-			Tabs.AddRange(editorCacheSave.tabs);
-			foreach (var tabInfo in Tabs)
-			{
-				foreach (var item in tabInfo.list)
-				{
-					if (string.IsNullOrEmpty(item.displayName))
-					{
-						item.SetDisplayName();
-					}
-				}
-			}
-
-			InitReOrderTabList();
-		}
-
-		[Serializable]
-		public class EditorCacheSave
-		{
-			public List<CacheTabInfo> tabs = new List<CacheTabInfo>();
-		}
-
-		public enum CacheObjectLocation
-		{
-			Assets,
-			Scene,
-			Prefab,
-		}
-
-		[Serializable]
-		public class CacheTabInfo
-		{
-			public int id;
-			public string tabName;
-			public List<CacheObjectInfo> list = new List<CacheObjectInfo>();
-			public CacheObjectInfo selected;
-			public Editor editor;
-			public float iconSize = 20;
-			public bool gridView;
-		}
-	}
-
-	public class EditorCacheStyle
-	{
-		public readonly GUILayoutOption ExpandWidthFalse = GUILayout.ExpandWidth(false);
-		public readonly GUILayoutOption ExpandWidth200 = GUILayout.Width(100);
-		public readonly GUIStyle PreviewTexture;
-		public readonly GUIStyle ButtonStyle;
-		public readonly GUIStyle TextEmpty;
-		public readonly GUIStyle ToolBar;
-
-		public readonly GUIStyle ButtonLeftSelected;
-		public readonly GUIStyle ButtonMidSelected;
-		public readonly GUIStyle ButtonRightSelected;
-
-		public readonly GUIStyle ToolbarSeachTextField;
-		public readonly GUIStyle RectangleToolSelection;
-		public readonly GUIStyle ProjectBrowserIconAreaBg;
-		public readonly GUIStyle SelectionRect;
-		public readonly GUIStyle Parent;
-		public readonly GUIStyle Text1;
-
-		public EditorCacheStyle()
-		{
-			ToolbarSeachTextField = GUI.skin.GetStyle(GUI.skin.textField.name);
-			ProjectBrowserIconAreaBg = GUI.skin.GetStyle("ProjectBrowserIconAreaBg");
-			RectangleToolSelection = GUI.skin.GetStyle("RectangleToolSelection");
-			SelectionRect = GUI.skin.GetStyle("SelectionRect");
-			PreviewTexture = new GUIStyle(GUI.skin.box)
-				{ fixedWidth = 20, fixedHeight = 20, alignment = TextAnchor.MiddleCenter };
-			ButtonLeftSelected = new GUIStyle(EditorStyles.miniButtonLeft);
-			ButtonMidSelected = new GUIStyle(EditorStyles.miniButtonMid);
-			ButtonRightSelected = new GUIStyle(EditorStyles.miniButtonRight);
-			ButtonLeftSelected.normal.textColor = ButtonMidSelected.normal.textColor =
-				ButtonRightSelected.normal.textColor = Color.yellow;
-			ButtonLeftSelected.onHover.textColor = ButtonMidSelected.onHover.textColor =
-				ButtonRightSelected.onHover.textColor = Color.yellow;
-
-			ButtonLeftSelected.focused.textColor = ButtonMidSelected.focused.textColor =
-				ButtonRightSelected.focused.textColor = Color.yellow;
-
-			ButtonLeftSelected.fontStyle = ButtonMidSelected.fontStyle =
-				ButtonRightSelected.fontStyle = FontStyle.Bold;
-
-			ColorUtility.TryParseHtmlString("#363636", out var bgColor);
-			ButtonStyle = new GUIStyle("Button");
-			ButtonStyle.alignment = TextAnchor.MiddleLeft;
-			TextEmpty = new GUIStyle(EditorStyles.label);
-			TextEmpty.alignment = TextAnchor.MiddleCenter;
-			ToolBar = new GUIStyle(EditorStyles.toolbar);
-			ToolBar.fixedHeight = 60;
-
-			Parent = new GUIStyle(GUI.skin.box)
-			{
-				normal =
-				{
-					textColor = new Color(.6f, .6f, .6f, .8f)
-				},
-				fontSize = 10,
-				padding = new RectOffset(5, 5, 5, 5)
-			};
-			Text1 = new GUIStyle()
-			{
-				normal =
-				{
-					textColor = new Color(.6f, .6f, .6f, .8f)
-				},
-				fontSize = 10,
-				padding = new RectOffset(5, 5, 5, 5)
-			};
-		}
-	}
-
-	public static class EditorCacheHelper
-	{
-		public static void ShowFolderContents(int folderInstanceID)
-		{
-			Assembly editorAssembly = typeof(Editor).Assembly;
-			Type projectBrowserType = editorAssembly.GetType("UnityEditor.ProjectBrowser");
-			MethodInfo showFolderContents = projectBrowserType.GetMethod(
-				"ShowFolderContents", BindingFlags.Instance | BindingFlags.NonPublic);
-			Object[] projectBrowserInstances = Resources.FindObjectsOfTypeAll(projectBrowserType);
-			if (projectBrowserInstances.Length > 0)
-			{
-				for (int i = 0; i < projectBrowserInstances.Length; i++)
-					ShowFolderContentsInternal(projectBrowserInstances[i], showFolderContents, folderInstanceID);
-			}
-			else
-			{
-				EditorWindow projectBrowser = OpenNewProjectBrowser(projectBrowserType);
-				ShowFolderContentsInternal(projectBrowser, showFolderContents, folderInstanceID);
-			}
-		}
-
-		private static void ShowFolderContentsInternal(Object projectBrowser, MethodInfo showFolderContents,
-			int folderInstanceID)
-		{
-			SerializedObject serializedObject = new SerializedObject(projectBrowser);
-			bool inTwoColumnMode = serializedObject.FindProperty("m_ViewMode").enumValueIndex == 1;
-
-			if (!inTwoColumnMode)
-			{
-				MethodInfo setTwoColumns = projectBrowser.GetType().GetMethod(
-					"SetTwoColumns", BindingFlags.Instance | BindingFlags.NonPublic);
-				setTwoColumns.Invoke(projectBrowser, null);
-			}
-
-			bool revealAndFrameInFolderTree = true;
-			showFolderContents.Invoke(projectBrowser, new object[] { folderInstanceID, revealAndFrameInFolderTree });
-		}
-
-		private static EditorWindow OpenNewProjectBrowser(Type projectBrowserType)
-		{
-			EditorWindow projectBrowser = EditorWindow.GetWindow(projectBrowserType);
-			projectBrowser.Show();
-			MethodInfo init = projectBrowserType.GetMethod("Init", BindingFlags.Instance | BindingFlags.Public);
-			init.Invoke(projectBrowser, null);
-			return projectBrowser;
-		}
-	}
+    public class AssetBookmarker : EditorWindow
+    {
+        private BookmarkRootData _data;
+        private int _selectedTabIndex;
+        private string _searchTabQuery = string.Empty;
+
+        private Vector2 _sidebarScrollPos;
+        private Vector2 _contentScrollPos;
+
+        private float _sidebarWidth = 150f;
+        private bool _isResizingSidebar;
+        private Rect _resizerRect;
+
+        private string _renamingTabId;
+        private string _renamingTabName = string.Empty;
+
+        private ReorderableList _reorderableList;
+        private BookmarkTab _cachedListTab;
+
+        private static Object[] _pendingRegisteredAssets;
+
+        [MenuItem("Ktgame/Assets Bookmarker", false, 5000)]
+        public static void Open()
+        {
+            var window = GetWindow<AssetBookmarker>("Assets Bookmarker");
+            window.minSize = new Vector2(450, 260);
+            window.Show();
+        }
+
+        [MenuItem("Assets/Add to Assets Bookmarker", false, 10001)]
+        private static void RegisterAssetSelection()
+        {
+            _pendingRegisteredAssets = Selection.objects;
+            Open();
+        }
+
+        [MenuItem("GameObject/Add to Assets Bookmarker", false, 10001)]
+        private static void RegisterHierarchySelection()
+        {
+            _pendingRegisteredAssets = Selection.objects;
+            Open();
+        }
+
+        private void OnEnable()
+        {
+            _data = BookmarkStorage.Load(out _);
+            if (_data.tabs.Count == 0)
+            {
+                _data.tabs.Add(new BookmarkTab { name = "Common" });
+            }
+
+            _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
+            UpdateReorderableList();
+            ProcessPendingRegistrations();
+        }
+
+        private void OnDisable()
+        {
+            BookmarkStorage.Save(_data);
+        }
+
+        private void OnGUI()
+        {
+            if (_data == null || _data.tabs == null || _data.tabs.Count == 0)
+            {
+                _data = BookmarkStorage.Load(out _);
+                if (_data.tabs.Count == 0) _data.tabs.Add(new BookmarkTab { name = "Common" });
+            }
+
+            _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
+            var currentTab = _data.tabs[_selectedTabIndex];
+
+            ProcessPendingRegistrations();
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                DrawSidebar();
+                DrawSplitter();
+                DrawContent(currentTab);
+            }
+
+            HandleWindowDragAndDrop(currentTab);
+        }
+
+        #region Left Sidebar (Tabs)
+
+        private void DrawSidebar()
+        {
+            var sidebarRect = EditorGUILayout.BeginVertical(GUILayout.Width(_sidebarWidth));
+            EditorGUI.DrawRect(sidebarRect, new Color(0.15f, 0.15f, 0.15f, 1f));
+
+            // Top Search Bar for Tabs
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
+            {
+                _searchTabQuery = EditorGUILayout.TextField(_searchTabQuery, EditorStyles.toolbarSearchField);
+                if (!string.IsNullOrEmpty(_searchTabQuery) && GUILayout.Button("×", EditorStyles.toolbarButton, GUILayout.Width(16)))
+                {
+                    _searchTabQuery = string.Empty;
+                    GUI.FocusControl(null);
+                }
+            }
+
+            EditorGUILayout.Space(2);
+
+            _sidebarScrollPos = EditorGUILayout.BeginScrollView(_sidebarScrollPos);
+
+            for (int i = 0; i < _data.tabs.Count; i++)
+            {
+                var tab = _data.tabs[i];
+
+                if (!string.IsNullOrEmpty(_searchTabQuery) &&
+                    tab.name.IndexOf(_searchTabQuery, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                bool isSelected = i == _selectedTabIndex;
+                var tabRect = GUILayoutUtility.GetRect(_sidebarWidth - 4, 24);
+                bool isHovered = tabRect.Contains(Event.current.mousePosition);
+
+                // Draw background
+                if (isSelected)
+                {
+                    EditorGUI.DrawRect(tabRect, new Color(0.23f, 0.38f, 0.58f, 1f)); // Odin-style selection blue
+                }
+                else if (isHovered)
+                {
+                    EditorGUI.DrawRect(tabRect, new Color(0.22f, 0.22f, 0.22f, 1f));
+                }
+
+                // Handle inline renaming
+                if (_renamingTabId == tab.id)
+                {
+                    var renameRect = new Rect(tabRect.x + 4, tabRect.y + 2, tabRect.width - 8, 20);
+                    GUI.SetNextControlName("RenameTabInput");
+                    _renamingTabName = EditorGUI.TextField(renameRect, _renamingTabName);
+                    EditorGUI.FocusTextInControl("RenameTabInput");
+
+                    if (Event.current.type == EventType.KeyDown && (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter))
+                    {
+                        if (!string.IsNullOrEmpty(_renamingTabName)) tab.name = _renamingTabName.Trim();
+                        _renamingTabId = null;
+                        BookmarkStorage.Save(_data);
+                        Event.current.Use();
+                    }
+                    else if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Escape)
+                    {
+                        _renamingTabId = null;
+                        Event.current.Use();
+                    }
+                }
+                else
+                {
+                    // Label with item count
+                    string displayLabel = $"{tab.name} ({tab.items.Count})";
+                    var style = isSelected ? EditorStyles.whiteBoldLabel : EditorStyles.label;
+                    var labelRect = new Rect(tabRect.x + 8, tabRect.y + 3, tabRect.width - 12, 18);
+                    GUI.Label(labelRect, displayLabel, style);
+
+                    // Interactions
+                    if (Event.current.type == EventType.ContextClick && tabRect.Contains(Event.current.mousePosition))
+                    {
+                        ShowTabContextMenu(i);
+                        Event.current.Use();
+                    }
+                    else if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && tabRect.Contains(Event.current.mousePosition))
+                    {
+                        if (Event.current.clickCount == 2)
+                        {
+                            _renamingTabId = tab.id;
+                            _renamingTabName = tab.name;
+                        }
+                        else
+                        {
+                            _selectedTabIndex = i;
+                            _renamingTabId = null;
+                            UpdateReorderableList();
+                            GUI.FocusControl(null);
+                        }
+                        Event.current.Use();
+                    }
+                }
+            }
+
+            EditorGUILayout.EndScrollView();
+
+            // Bottom Add Tab Button
+            if (GUILayout.Button("+ Add Tab", EditorStyles.miniButton, GUILayout.Height(22)))
+            {
+                AddNewTab();
+            }
+
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawSplitter()
+        {
+            _resizerRect = GUILayoutUtility.GetRect(4f, Screen.height, GUILayout.ExpandHeight(true));
+            EditorGUIUtility.AddCursorRect(_resizerRect, MouseCursor.ResizeHorizontal);
+
+            if (Event.current.type == EventType.MouseDown && _resizerRect.Contains(Event.current.mousePosition))
+            {
+                _isResizingSidebar = true;
+                Event.current.Use();
+            }
+
+            if (_isResizingSidebar)
+            {
+                if (Event.current.type == EventType.MouseDrag)
+                {
+                    _sidebarWidth = Mathf.Clamp(Event.current.mousePosition.x, 110f, 260f);
+                    Repaint();
+                    Event.current.Use();
+                }
+                else if (Event.current.type == EventType.MouseUp)
+                {
+                    _isResizingSidebar = false;
+                    Event.current.Use();
+                }
+            }
+        }
+
+        private void AddNewTab()
+        {
+            _data.tabs.Add(new BookmarkTab
+            {
+                name = $"Tab {_data.tabs.Count + 1}",
+                items = new List<BookmarkItem>()
+            });
+            _selectedTabIndex = _data.tabs.Count - 1;
+            UpdateReorderableList();
+            BookmarkStorage.Save(_data);
+        }
+
+        private void ShowTabContextMenu(int tabIndex)
+        {
+            var menu = new GenericMenu();
+            var tab = _data.tabs[tabIndex];
+
+            menu.AddItem(new GUIContent("Rename"), false, () =>
+            {
+                _renamingTabId = tab.id;
+                _renamingTabName = tab.name;
+            });
+
+            menu.AddItem(new GUIContent("Duplicate"), false, () =>
+            {
+                var copy = tab.Clone();
+                _data.tabs.Insert(tabIndex + 1, copy);
+                _selectedTabIndex = tabIndex + 1;
+                UpdateReorderableList();
+                BookmarkStorage.Save(_data);
+            });
+
+            if (tabIndex > 0)
+            {
+                menu.AddItem(new GUIContent("Move Up"), false, () =>
+                {
+                    var t = _data.tabs[tabIndex];
+                    _data.tabs.RemoveAt(tabIndex);
+                    _data.tabs.Insert(tabIndex - 1, t);
+                    _selectedTabIndex = tabIndex - 1;
+                    UpdateReorderableList();
+                    BookmarkStorage.Save(_data);
+                });
+            }
+            if (tabIndex < _data.tabs.Count - 1)
+            {
+                menu.AddItem(new GUIContent("Move Down"), false, () =>
+                {
+                    var t = _data.tabs[tabIndex];
+                    _data.tabs.RemoveAt(tabIndex);
+                    _data.tabs.Insert(tabIndex + 1, t);
+                    _selectedTabIndex = tabIndex + 1;
+                    UpdateReorderableList();
+                    BookmarkStorage.Save(_data);
+                });
+            }
+
+            if (tab.items.Count > 0)
+            {
+                menu.AddSeparator("");
+                menu.AddItem(new GUIContent("Clear All Items"), false, () =>
+                {
+                    if (EditorUtility.DisplayDialog("Clear Tab", $"Remove all bookmarks in '{tab.name}'?", "Clear", "Cancel"))
+                    {
+                        tab.items.Clear();
+                        BookmarkStorage.Save(_data);
+                    }
+                });
+            }
+
+            menu.AddSeparator("");
+            if (_data.tabs.Count > 1)
+            {
+                menu.AddItem(new GUIContent("Delete"), false, () =>
+                {
+                    if (EditorUtility.DisplayDialog("Delete Tab", $"Delete '{tab.name}'?", "Delete", "Cancel"))
+                    {
+                        _data.tabs.RemoveAt(tabIndex);
+                        _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
+                        UpdateReorderableList();
+                        BookmarkStorage.Save(_data);
+                    }
+                });
+            }
+            else
+            {
+                menu.AddDisabledItem(new GUIContent("Delete"));
+            }
+
+            menu.ShowAsContext();
+        }
+
+        #endregion
+
+        #region Right Panel (Reorderable List)
+
+        private void UpdateReorderableList()
+        {
+            if (_data == null || _data.tabs.Count == 0) return;
+            _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
+            var tab = _data.tabs[_selectedTabIndex];
+
+            _cachedListTab = tab;
+
+            _reorderableList = new ReorderableList(tab.items, typeof(BookmarkItem), true, false, false, false)
+            {
+                drawElementCallback = (Rect rect, int index, bool isActive, bool isFocused) =>
+                {
+                    if (index < 0 || index >= tab.items.Count) return;
+                    var item = tab.items[index];
+
+                    rect.y += 2;
+                    rect.height = EditorGUIUtility.singleLineHeight;
+
+                    float buttonsWidth = 118f;
+                    var assetRect = new Rect(rect.x, rect.y, rect.width - buttonsWidth - 6, rect.height);
+
+                    var obj = item.GetTargetObject();
+
+                    // Double click on row to open
+                    if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && Event.current.clickCount == 2 && rect.Contains(Event.current.mousePosition))
+                    {
+                        if (obj != null)
+                        {
+                            item.Open();
+                            Event.current.Use();
+                        }
+                    }
+
+                    // Right click context menu on row
+                    if (Event.current.type == EventType.ContextClick && rect.Contains(Event.current.mousePosition))
+                    {
+                        var menu = new GenericMenu();
+                        if (obj != null)
+                        {
+                            menu.AddItem(new GUIContent("Open"), false, () => item.Open());
+                            menu.AddItem(new GUIContent("Ping (Highlight)"), false, () => item.Ping());
+                            menu.AddSeparator("");
+                        }
+                        menu.AddItem(new GUIContent("Remove from Bookmarks"), false, () =>
+                        {
+                            tab.items.RemoveAt(index);
+                            BookmarkStorage.Save(_data);
+                        });
+                        menu.ShowAsContext();
+                        Event.current.Use();
+                    }
+
+                    // Object Field or Missing label
+                    if (obj != null)
+                    {
+                        EditorGUI.BeginChangeCheck();
+                        var newObj = EditorGUI.ObjectField(assetRect, obj, typeof(Object), true);
+                        if (EditorGUI.EndChangeCheck() && newObj != null && newObj != obj)
+                        {
+                            string p = AssetDatabase.GetAssetPath(newObj);
+                            if (!string.IsNullOrEmpty(p))
+                            {
+                                item.guid = AssetDatabase.AssetPathToGUID(p);
+                                item.path = p;
+                                item.name = newObj.name;
+                                item.location = BookmarkLocation.Asset;
+                                BookmarkStorage.Save(_data);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var prevColor = GUI.color;
+                        GUI.color = new Color(1f, 0.4f, 0.4f);
+                        EditorGUI.LabelField(assetRect, $"[Missing] {item.name}", EditorStyles.boldLabel);
+                        GUI.color = prevColor;
+                    }
+
+                    // Open Button
+                    EditorGUI.BeginDisabledGroup(obj == null);
+                    var openRect = new Rect(rect.xMax - buttonsWidth, rect.y, 44, rect.height);
+                    var prevBg = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(0.25f, 0.65f, 1f);
+                    if (GUI.Button(openRect, "Open", EditorStyles.miniButton))
+                    {
+                        item.Open();
+                    }
+                    GUI.backgroundColor = prevBg;
+
+                    // Ping Button
+                    var pingRect = new Rect(rect.xMax - buttonsWidth + 48, rect.y, 42, rect.height);
+                    if (GUI.Button(pingRect, "Ping", EditorStyles.miniButton))
+                    {
+                        item.Ping();
+                    }
+                    EditorGUI.EndDisabledGroup();
+
+                    // Remove (X) Button
+                    var removeRect = new Rect(rect.xMax - buttonsWidth + 94, rect.y, 24, rect.height);
+                    var prevXColor = GUI.color;
+                    GUI.color = new Color(1f, 0.45f, 0.45f);
+                    if (GUI.Button(removeRect, "×", EditorStyles.miniButton))
+                    {
+                        tab.items.RemoveAt(index);
+                        BookmarkStorage.Save(_data);
+                        GUIUtility.ExitGUI();
+                    }
+                    GUI.color = prevXColor;
+                },
+                drawNoneElementCallback = (Rect rect) =>
+                {
+                    GUI.Label(rect, "Drag & drop assets here, or click '+ Add Selected Assets'", EditorStyles.centeredGreyMiniLabel);
+                },
+                onReorderCallback = (ReorderableList l) =>
+                {
+                    BookmarkStorage.Save(_data);
+                }
+            };
+        }
+
+        private void DrawContent(BookmarkTab tab)
+        {
+            EditorGUILayout.BeginVertical();
+
+            // Top Control Bar
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
+            {
+                GUILayout.Label(tab.name, EditorStyles.boldLabel);
+                GUILayout.FlexibleSpace();
+
+                var prevBg = GUI.backgroundColor;
+                GUI.backgroundColor = new Color(0.25f, 0.75f, 0.35f);
+                if (GUILayout.Button("+ Add Selected Assets", EditorStyles.toolbarButton))
+                {
+                    AddSelectedAssets(tab);
+                }
+                GUI.backgroundColor = prevBg;
+            }
+
+            _contentScrollPos = EditorGUILayout.BeginScrollView(_contentScrollPos);
+
+            if (_reorderableList == null || _cachedListTab != tab)
+            {
+                UpdateReorderableList();
+            }
+
+            EditorGUILayout.Space(6);
+            _reorderableList.DoLayoutList();
+
+            EditorGUILayout.EndScrollView();
+            EditorGUILayout.EndVertical();
+        }
+
+        private void AddSelectedAssets(BookmarkTab tab)
+        {
+            var selected = Selection.objects;
+            if (selected == null || selected.Length == 0)
+            {
+                EditorUtility.DisplayDialog("Add Assets", "Please select one or more assets in Project window first.", "OK");
+                return;
+            }
+
+            int addedCount = 0;
+            foreach (var obj in selected)
+            {
+                if (obj == null) continue;
+                if (AddObjectToTab(tab, obj))
+                {
+                    addedCount++;
+                }
+            }
+
+            if (addedCount > 0)
+            {
+                BookmarkStorage.Save(_data);
+                ShowNotification(new GUIContent($"Added {addedCount} asset(s)!"));
+            }
+        }
+
+        #endregion
+
+        #region Drag and Drop Handling
+
+        private void HandleWindowDragAndDrop(BookmarkTab currentTab)
+        {
+            var e = Event.current;
+            if (e.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                e.Use();
+            }
+            else if (e.type == EventType.DragPerform)
+            {
+                DragAndDrop.AcceptDrag();
+
+                if (currentTab != null && DragAndDrop.objectReferences != null && DragAndDrop.objectReferences.Length > 0)
+                {
+                    int addedCount = 0;
+                    foreach (var obj in DragAndDrop.objectReferences)
+                    {
+                        if (obj != null && AddObjectToTab(currentTab, obj))
+                        {
+                            addedCount++;
+                        }
+                    }
+
+                    if (addedCount > 0)
+                    {
+                        BookmarkStorage.Save(_data);
+                        ShowNotification(new GUIContent($"Added {addedCount} bookmark(s)!"));
+                    }
+                }
+
+                e.Use();
+            }
+        }
+
+        private void ProcessPendingRegistrations()
+        {
+            if (_pendingRegisteredAssets == null || _pendingRegisteredAssets.Length == 0) return;
+
+            var tab = _data.tabs.Count > 0 ? _data.tabs[_selectedTabIndex] : null;
+            if (tab == null) return;
+
+            int addedCount = 0;
+            foreach (var obj in _pendingRegisteredAssets)
+            {
+                if (obj != null && AddObjectToTab(tab, obj))
+                {
+                    addedCount++;
+                }
+            }
+
+            _pendingRegisteredAssets = null;
+
+            if (addedCount > 0)
+            {
+                BookmarkStorage.Save(_data);
+                ShowNotification(new GUIContent($"Added {addedCount} asset(s)!"));
+            }
+        }
+
+        private bool AddObjectToTab(BookmarkTab tab, Object obj)
+        {
+            string path = AssetDatabase.GetAssetPath(obj);
+
+            if (!string.IsNullOrEmpty(path))
+            {
+                string guid = AssetDatabase.AssetPathToGUID(path);
+                if (tab.items.Any(i => i.guid == guid)) return false;
+
+                tab.items.Add(new BookmarkItem
+                {
+                    guid = guid,
+                    name = obj.name,
+                    path = path,
+                    location = BookmarkLocation.Asset
+                });
+                return true;
+            }
+            else if (obj is GameObject go)
+            {
+                string hierarchyPath = GetGameObjectHierarchyPath(go.transform);
+                if (tab.items.Any(i => i.sceneHierarchyPath == hierarchyPath)) return false;
+
+                tab.items.Add(new BookmarkItem
+                {
+                    name = go.name,
+                    location = BookmarkLocation.SceneObject,
+                    sceneHierarchyPath = hierarchyPath,
+                    sceneGuid = go.scene.path
+                });
+                return true;
+            }
+
+            return false;
+        }
+
+        private string GetGameObjectHierarchyPath(Transform t)
+        {
+            string path = t.name;
+            while (t.parent != null)
+            {
+                t = t.parent;
+                path = t.name + "/" + path;
+            }
+            return path;
+        }
+
+        #endregion
+    }
 }

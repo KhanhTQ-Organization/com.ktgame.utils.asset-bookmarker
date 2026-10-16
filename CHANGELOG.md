@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/KhanhTQ-Organization/com.ktgame.utils.asset-bookmarker/compare/v1.0.2...v1.0.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* update ([d265326](https://github.com/KhanhTQ-Organization/com.ktgame.utils.asset-bookmarker/commit/d265326371d3b1f7119f4669cba8385122cd54a9))
+
 ## [1.0.2](https://github.com/KhanhTQ-Organization/com.ktgame.utils.asset-bookmarker/compare/v1.0.1...v1.0.2) (2026-10-15)
 
 

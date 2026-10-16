@@ -96,10 +96,10 @@ namespace com.ktgame.utils.asset_bookmarker.editor
 
         private void DrawSidebar()
         {
-            var sidebarRect = EditorGUILayout.BeginVertical(GUILayout.Width(_sidebarWidth));
+            var sidebarRect = EditorGUILayout.BeginVertical(GUILayout.Width(_sidebarWidth), GUILayout.ExpandHeight(true));
             EditorGUI.DrawRect(sidebarRect, new Color(0.15f, 0.15f, 0.15f, 1f));
 
-            // Top Search Bar for Tabs
+            // Top Search & Tab Management Toolbar
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 _searchTabQuery = EditorGUILayout.TextField(_searchTabQuery, EditorStyles.toolbarSearchField);
@@ -108,6 +108,20 @@ namespace com.ktgame.utils.asset_bookmarker.editor
                     _searchTabQuery = string.Empty;
                     GUI.FocusControl(null);
                 }
+
+                // Add Tab Button (+)
+                if (GUILayout.Button(EditorGUIUtility.TrIconContent("Toolbar Plus", "Add Tab") ?? new GUIContent("+", "Add Tab"), EditorStyles.toolbarButton, GUILayout.Width(22)))
+                {
+                    AddNewTab();
+                }
+
+                // Delete Tab Button (-)
+                EditorGUI.BeginDisabledGroup(_data.tabs.Count <= 1);
+                if (GUILayout.Button(EditorGUIUtility.TrIconContent("Toolbar Minus", "Delete Selected Tab") ?? new GUIContent("-", "Delete Selected Tab"), EditorStyles.toolbarButton, GUILayout.Width(22)))
+                {
+                    DeleteTab(_selectedTabIndex);
+                }
+                EditorGUI.EndDisabledGroup();
             }
 
             EditorGUILayout.Space(2);
@@ -161,11 +175,28 @@ namespace com.ktgame.utils.asset_bookmarker.editor
                 }
                 else
                 {
+                    // Inline delete button when hovered/selected and more than 1 tab
+                    bool showDelete = _data.tabs.Count > 1 && (isHovered || isSelected);
+                    float deleteWidth = showDelete ? 20f : 0f;
+
                     // Label with item count
                     string displayLabel = $"{tab.name} ({tab.items.Count})";
                     var style = isSelected ? EditorStyles.whiteBoldLabel : EditorStyles.label;
-                    var labelRect = new Rect(tabRect.x + 8, tabRect.y + 3, tabRect.width - 12, 18);
+                    var labelRect = new Rect(tabRect.x + 8, tabRect.y + 3, tabRect.width - 12 - deleteWidth, 18);
                     GUI.Label(labelRect, displayLabel, style);
+
+                    if (showDelete)
+                    {
+                        var delRect = new Rect(tabRect.xMax - 20, tabRect.y + 3, 16, 16);
+                        var prevColor = GUI.color;
+                        GUI.color = new Color(1f, 0.5f, 0.5f, 0.85f);
+                        if (GUI.Button(delRect, "×", EditorStyles.miniButton))
+                        {
+                            DeleteTab(i);
+                            GUIUtility.ExitGUI();
+                        }
+                        GUI.color = prevColor;
+                    }
 
                     // Interactions
                     if (Event.current.type == EventType.ContextClick && tabRect.Contains(Event.current.mousePosition))
@@ -194,13 +225,45 @@ namespace com.ktgame.utils.asset_bookmarker.editor
 
             EditorGUILayout.EndScrollView();
 
-            // Bottom Add Tab Button
-            if (GUILayout.Button("+ Add Tab", EditorStyles.miniButton, GUILayout.Height(22)))
+            // Bottom Add & Delete Toolbar (Always visible at bottom)
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
-                AddNewTab();
+                if (GUILayout.Button("+ Add Tab", EditorStyles.toolbarButton))
+                {
+                    AddNewTab();
+                }
+
+                GUILayout.FlexibleSpace();
+
+                EditorGUI.BeginDisabledGroup(_data.tabs.Count <= 1);
+                if (GUILayout.Button("Delete Tab", EditorStyles.toolbarButton))
+                {
+                    DeleteTab(_selectedTabIndex);
+                }
+                EditorGUI.EndDisabledGroup();
             }
 
             EditorGUILayout.EndVertical();
+        }
+
+        private void DeleteTab(int tabIndex)
+        {
+            if (_data.tabs.Count <= 1)
+            {
+                EditorUtility.DisplayDialog("Cannot Delete", "You must keep at least one tab.", "OK");
+                return;
+            }
+
+            if (tabIndex < 0 || tabIndex >= _data.tabs.Count) return;
+            var tab = _data.tabs[tabIndex];
+
+            if (EditorUtility.DisplayDialog("Delete Tab", $"Are you sure you want to delete '{tab.name}' ({tab.items.Count} items)?", "Delete", "Cancel"))
+            {
+                _data.tabs.RemoveAt(tabIndex);
+                _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
+                UpdateReorderableList();
+                BookmarkStorage.Save(_data);
+            }
         }
 
         private void DrawSplitter()
@@ -305,13 +368,7 @@ namespace com.ktgame.utils.asset_bookmarker.editor
             {
                 menu.AddItem(new GUIContent("Delete"), false, () =>
                 {
-                    if (EditorUtility.DisplayDialog("Delete Tab", $"Delete '{tab.name}'?", "Delete", "Cancel"))
-                    {
-                        _data.tabs.RemoveAt(tabIndex);
-                        _selectedTabIndex = Mathf.Clamp(_selectedTabIndex, 0, _data.tabs.Count - 1);
-                        UpdateReorderableList();
-                        BookmarkStorage.Save(_data);
-                    }
+                    DeleteTab(tabIndex);
                 });
             }
             else

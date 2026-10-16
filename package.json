@@ -6,7 +6,7 @@
     "email": "khanhquang0912qh@gmail.com",
     "url": "https://github.com/KhanhTQ-Organization/com.ktgame.utils.asset-bookmarker"
   },
-  "version": "1.0.2",
+  "version": "1.0.3",
   "unity": "2021.3",
   "description": "Fast & powerful asset and scene bookmarking utility for Unity. Features GUID persistence, quick actions, type filtering, favorites, and team sharing.",
   "publishConfig": {

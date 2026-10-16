@@ -102,46 +102,124 @@ namespace com.ktgame.utils.asset_bookmarker.editor
             var obj = GetTargetObject();
             if (obj == null) return;
 
-            if (location == BookmarkLocation.Asset)
+            string effectivePath = !string.IsNullOrEmpty(path) ? path : AssetDatabase.GetAssetPath(obj);
+            if (string.IsNullOrEmpty(effectivePath) && !string.IsNullOrEmpty(guid))
             {
-                string ext = Path.GetExtension(path).ToLowerInvariant();
-                if (ext == ".unity")
+                effectivePath = AssetDatabase.GUIDToAssetPath(guid);
+            }
+            if (!string.IsNullOrEmpty(effectivePath))
+            {
+                path = effectivePath;
+            }
+
+            // 1. Folder -> Open inside the folder in Project Browser
+            if (AssetDatabase.IsValidFolder(effectivePath))
+            {
+                OpenFolderInProjectBrowser(obj);
+                return;
+            }
+
+            // 2. Prefab Asset -> Open directly in Prefab Stage & focus SceneView
+            bool isPrefab = (!string.IsNullOrEmpty(effectivePath) && effectivePath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                || (obj is GameObject && PrefabUtility.IsPartOfPrefabAsset(obj));
+
+            if (isPrefab)
+            {
+                if (string.IsNullOrEmpty(effectivePath))
                 {
-                    if (EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                    effectivePath = AssetDatabase.GetAssetPath(obj);
+                }
+
+                if (!string.IsNullOrEmpty(effectivePath))
+                {
+                    var stage = PrefabStageUtility.OpenPrefab(effectivePath);
+                    if (stage != null)
                     {
-                        EditorSceneManager.OpenScene(path);
+                        var sceneView = EditorWindow.GetWindow<SceneView>();
+                        if (sceneView != null) sceneView.Focus();
+                        return;
                     }
-                    return;
-                }
-
-                if (ext == ".prefab")
-                {
-                    PrefabStageUtility.OpenPrefab(path);
-                    return;
-                }
-
-                if (AssetDatabase.IsValidFolder(path))
-                {
-                    EditorUtility.FocusProjectWindow();
-                    Selection.activeObject = obj;
-                    EditorGUIUtility.PingObject(obj);
-                    return;
                 }
 
                 AssetDatabase.OpenAsset(obj);
+                return;
             }
-            else if (location == BookmarkLocation.SceneObject)
+
+            // 3. Scene Asset -> Prompt save and open scene
+            if (!string.IsNullOrEmpty(effectivePath) && effectivePath.EndsWith(".unity", StringComparison.OrdinalIgnoreCase))
+            {
+                if (EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                {
+                    EditorSceneManager.OpenScene(effectivePath);
+                }
+                return;
+            }
+
+            // 4. Scene Object (GameObject in hierarchy)
+            if (location == BookmarkLocation.SceneObject || (obj is GameObject goInScene && !EditorUtility.IsPersistent(goInScene)))
             {
                 if (obj is GameObject go)
                 {
+                    // If it is a prefab instance in the scene, open its prefab stage
+                    if (PrefabUtility.IsPartOfAnyPrefab(go))
+                    {
+                        string prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+                        if (!string.IsNullOrEmpty(prefabPath))
+                        {
+                            var stage = PrefabStageUtility.OpenPrefab(prefabPath);
+                            if (stage != null)
+                            {
+                                var sceneView = EditorWindow.GetWindow<SceneView>();
+                                if (sceneView != null) sceneView.Focus();
+                                return;
+                            }
+                        }
+                    }
+
                     if (SceneView.lastActiveSceneView != null)
                     {
                         SceneView.lastActiveSceneView.LookAt(go.transform.position);
+                        SceneView.lastActiveSceneView.Focus();
                     }
                     Selection.activeGameObject = go;
                     EditorGUIUtility.PingObject(go);
+                    return;
                 }
             }
+
+            // 5. Default fallback for other assets (scripts, textures, scriptable objects)
+            AssetDatabase.OpenAsset(obj);
+        }
+
+        public static void OpenFolderInProjectBrowser(Object folderObj)
+        {
+            if (folderObj == null) return;
+            try
+            {
+                var editorAssembly = typeof(Editor).Assembly;
+                var projectBrowserType = editorAssembly.GetType("UnityEditor.ProjectBrowser");
+                if (projectBrowserType != null)
+                {
+                    var projectBrowser = EditorWindow.GetWindow(projectBrowserType);
+                    var method = projectBrowserType.GetMethod("ShowFolderContents",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (method != null)
+                    {
+                        method.Invoke(projectBrowser, new object[] { folderObj.GetInstanceID(), true });
+                        projectBrowser.Focus();
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AssetBookmarker] Failed to show folder contents: {ex.Message}");
+            }
+
+            // Fallback: ping & select in Project window
+            EditorUtility.FocusProjectWindow();
+            Selection.activeObject = folderObj;
+            EditorGUIUtility.PingObject(folderObj);
         }
     }
 
